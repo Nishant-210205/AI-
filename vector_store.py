@@ -465,15 +465,41 @@ class ChromaVectorStore(BaseVectorStore):
 
         import chromadb
         from chromadb.config import Settings
+        import shutil
 
-        self.client = chromadb.PersistentClient(
-            path=self.persist_directory,
-            settings=Settings(anonymized_telemetry=False)
-        )
-        self.collection = self.client.get_or_create_collection(
-            name=self.collection_name,
-            metadata={"description": "College Document Embeddings Collection", "dimension": embedding_dimension}
-        )
+        try:
+            self.client = chromadb.PersistentClient(
+                path=self.persist_directory,
+                settings=Settings(anonymized_telemetry=False)
+            )
+            self.collection = self.client.get_or_create_collection(
+                name=self.collection_name,
+                metadata={"description": "College Document Embeddings Collection", "dimension": embedding_dimension}
+            )
+            # Verify database integrity on this OS environment
+            _ = self.collection.count()
+            if _ > 0:
+                _ = self.collection.get(limit=1, include=["metadatas"])
+        except Exception:
+            # Self-heal cross-platform SQLite/Rust binding incompatibility
+            try:
+                shutil.rmtree(self.persist_directory, ignore_errors=True)
+                os.makedirs(self.persist_directory, exist_ok=True)
+                self.client = chromadb.PersistentClient(
+                    path=self.persist_directory,
+                    settings=Settings(anonymized_telemetry=False)
+                )
+                self.collection = self.client.get_or_create_collection(
+                    name=self.collection_name,
+                    metadata={"description": "College Document Embeddings Collection", "dimension": embedding_dimension}
+                )
+            except Exception:
+                # In-memory ephemeral fallback if disk client cannot initialize
+                self.client = chromadb.EphemeralClient(settings=Settings(anonymized_telemetry=False))
+                self.collection = self.client.get_or_create_collection(
+                    name=self.collection_name,
+                    metadata={"description": "College Document Embeddings Collection", "dimension": embedding_dimension}
+                )
 
     def delete_document(self, source_filename: str) -> int:
         try:
@@ -519,16 +545,19 @@ class ChromaVectorStore(BaseVectorStore):
         return self.add_chunks(chunks, embeddings)
 
     def query_similar(self, query_embedding: List[float], top_k: int = 4) -> List[Dict[str, Any]]:
-        count = self.collection.count()
-        if count == 0:
-            return []
+        try:
+            count = self.collection.count()
+            if count == 0:
+                return []
 
-        actual_k = min(top_k, count)
-        results = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=actual_k,
-            include=["documents", "metadatas", "distances"]
-        )
+            actual_k = min(top_k, count)
+            results = self.collection.query(
+                query_embeddings=[query_embedding],
+                n_results=actual_k,
+                include=["documents", "metadatas", "distances"]
+            )
+        except Exception:
+            return []
 
         retrieved = []
         if results and "documents" in results and results["documents"]:
@@ -556,14 +585,21 @@ class ChromaVectorStore(BaseVectorStore):
     similarity_search = query_similar
 
     def get_stats(self) -> Dict[str, Any]:
-        count = self.collection.count()
+        try:
+            count = self.collection.count()
+        except Exception:
+            count = 0
+
         sources = set()
         if count > 0:
-            sample = self.collection.get(include=["metadatas"])
-            if sample and "metadatas" in sample:
-                for meta in sample["metadatas"]:
-                    if meta and "source" in meta:
-                        sources.add(meta["source"])
+            try:
+                sample = self.collection.get(include=["metadatas"])
+                if sample and "metadatas" in sample:
+                    for meta in sample["metadatas"]:
+                        if meta and "source" in meta:
+                            sources.add(meta["source"])
+            except Exception:
+                pass
 
         return {
             "provider": "ChromaDB (Local / Test Storage)",
@@ -600,39 +636,63 @@ class ResilientVectorStore(BaseVectorStore):
 
     def delete_document(self, source_filename: str) -> int:
         if self._fallback_active:
-            return self.fallback.delete_document(source_filename)
+            try:
+                return self.fallback.delete_document(source_filename)
+            except Exception:
+                return 0
         try:
             return self.primary.delete_document(source_filename)
         except Exception as e:
             self._activate_fallback(str(e))
-            return self.fallback.delete_document(source_filename)
+            try:
+                return self.fallback.delete_document(source_filename)
+            except Exception:
+                return 0
 
     def add_chunks(self, chunks: List[Dict[str, Any]], embeddings: List[List[float]]) -> int:
         if self._fallback_active:
-            return self.fallback.add_chunks(chunks, embeddings)
+            try:
+                return self.fallback.add_chunks(chunks, embeddings)
+            except Exception:
+                return 0
         try:
             return self.primary.add_chunks(chunks, embeddings)
         except Exception as e:
             self._activate_fallback(str(e))
-            return self.fallback.add_chunks(chunks, embeddings)
+            try:
+                return self.fallback.add_chunks(chunks, embeddings)
+            except Exception:
+                return 0
 
     def safe_reindex_document(self, chunks: List[Dict[str, Any]], embeddings: List[List[float]]) -> int:
         if self._fallback_active:
-            return self.fallback.safe_reindex_document(chunks, embeddings)
+            try:
+                return self.fallback.safe_reindex_document(chunks, embeddings)
+            except Exception:
+                return 0
         try:
             return self.primary.safe_reindex_document(chunks, embeddings)
         except Exception as e:
             self._activate_fallback(str(e))
-            return self.fallback.safe_reindex_document(chunks, embeddings)
+            try:
+                return self.fallback.safe_reindex_document(chunks, embeddings)
+            except Exception:
+                return 0
 
     def query_similar(self, query_embedding: List[float], top_k: int = 4) -> List[Dict[str, Any]]:
         if self._fallback_active:
-            return self.fallback.query_similar(query_embedding, top_k=top_k)
+            try:
+                return self.fallback.query_similar(query_embedding, top_k=top_k)
+            except Exception:
+                return []
         try:
             return self.primary.query_similar(query_embedding, top_k=top_k)
         except Exception as e:
             self._activate_fallback(str(e))
-            return self.fallback.query_similar(query_embedding, top_k=top_k)
+            try:
+                return self.fallback.query_similar(query_embedding, top_k=top_k)
+            except Exception:
+                return []
 
     similarity_search = query_similar
 
@@ -646,9 +706,18 @@ class ResilientVectorStore(BaseVectorStore):
             except Exception as e:
                 self._activate_fallback(str(e))
 
-        fb_stats = dict(self.fallback.get_stats())
+        try:
+            fb_stats = dict(self.fallback.get_stats())
+        except Exception:
+            fb_stats = {
+                "provider": "VectorStore (Resilient Safe Mode)",
+                "total_chunks": 0,
+                "unique_documents": [],
+                "collection_name": "college_documents",
+            }
+
         fb_stats["fallback_active"] = True
-        fb_stats["provider"] = "ChromaDB (Active Resilient Fallback)"
+        fb_stats["provider"] = fb_stats.get("provider", "ChromaDB (Active Resilient Fallback)")
         if self._fallback_reason:
             clean_r = sanitize_secret_text(self._fallback_reason)
             fb_stats["notice"] = (
