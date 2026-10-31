@@ -10,7 +10,9 @@ from vector_store import (
     validate_and_sanitize_qdrant_url,
     sanitize_qdrant_api_key,
     sanitize_secret_text,
+    is_placeholder_qdrant_url,
     QdrantCloudVectorStore,
+    ResilientVectorStore,
     get_vector_store,
 )
 from llm_service import get_secret
@@ -163,4 +165,36 @@ def test_get_secret_whitespace_and_case_insensitive(monkeypatch):
     # Case insensitive
     val_lower = get_secret("test_qdrant_url")
     assert val_lower == "https://my-cluster.qdrant.io"
+
+
+def test_is_placeholder_qdrant_url():
+    assert is_placeholder_qdrant_url("https://your-cluster-id.region.aws.cloud.qdrant.io:6333") is True
+    assert is_placeholder_qdrant_url("https://your-cloud-qdrant.io") is True
+    assert is_placeholder_qdrant_url("") is True
+    assert is_placeholder_qdrant_url(None) is True
+    assert is_placeholder_qdrant_url("https://bc55f8d5-f950-414a-9251-97c65f673774.us-east-1-1.aws.cloud.qdrant.io") is False
+
+
+def test_get_vector_store_placeholder_fallback_to_chroma(monkeypatch):
+    monkeypatch.setenv("VECTOR_PROVIDER", "qdrant")
+    monkeypatch.setenv("QDRANT_URL", "https://your-cluster-id.region.aws.cloud.qdrant.io:6333")
+    monkeypatch.setenv("QDRANT_API_KEY", "your-real-qdrant-api-key-here")
+
+    store = get_vector_store()
+    stats = store.get_stats()
+    assert "ChromaDB" in stats["provider"]
+    assert "error" not in stats
+
+
+def test_resilient_vector_store_unreachable_fallback(monkeypatch):
+    monkeypatch.setenv("VECTOR_PROVIDER", "qdrant")
+    monkeypatch.setenv("QDRANT_URL", "https://unreachable-cluster-test-xyz.aws.cloud.qdrant.io:6333")
+    monkeypatch.setenv("QDRANT_API_KEY", "some-key")
+
+    store = get_vector_store()
+    stats = store.get_stats()
+    assert stats["fallback_active"] is True
+    assert "ChromaDB" in stats["provider"]
+    assert "error" not in stats
+
 

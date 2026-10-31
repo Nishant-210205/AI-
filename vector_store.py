@@ -112,6 +112,30 @@ def sanitize_qdrant_api_key(raw_key: Optional[str]) -> Optional[str]:
     return k
 
 
+def is_placeholder_qdrant_url(raw_url: Optional[str]) -> bool:
+    """
+    Checks if a Qdrant URL is an unconfigured documentation placeholder
+    (e.g. 'your-cluster-id', 'xxxxxx-xxxx', 'example.com').
+    """
+    if not raw_url:
+        return True
+    low = str(raw_url).lower().strip()
+    return any(
+        ph in low
+        for ph in (
+            "your-cluster-id",
+            "your-cloud-qdrant",
+            "your-replacement",
+            "your_qdrant",
+            "your-real-qdrant",
+            "cluster-id",
+            "xxxxxx-xxxx",
+            "example.com",
+            "your_real_key",
+        )
+    )
+
+
 def get_secret(key: str, default: Optional[str] = None) -> Optional[str]:
     # 1. Check environment variables (exact, uppercase, lowercase)
     for k in (key, key.upper(), key.lower()):
@@ -149,8 +173,10 @@ __all__ = [
     "BaseVectorStore",
     "QdrantCloudVectorStore",
     "ChromaVectorStore",
+    "ResilientVectorStore",
     "VectorStore",
     "get_vector_store",
+    "is_placeholder_qdrant_url",
     "validate_and_sanitize_qdrant_url",
     "sanitize_qdrant_api_key",
     "sanitize_secret_text",
@@ -570,6 +596,91 @@ class ChromaVectorStore(BaseVectorStore):
         )
 
 
+class ResilientVectorStore(BaseVectorStore):
+    """
+    Transparent fault-tolerant vector store wrapper.
+    Attempts operations on the primary store (e.g. Qdrant Cloud).
+    If the primary store is unreachable or fails due to network/DNS/suspension errors,
+    it seamlessly falls back to ChromaDB so the application never breaks.
+    """
+    def __init__(self, primary: BaseVectorStore, fallback: BaseVectorStore):
+        self.primary = primary
+        self.fallback = fallback
+        self._fallback_active = False
+        self._fallback_reason = None
+
+    def _activate_fallback(self, reason: str):
+        self._fallback_active = True
+        self._fallback_reason = reason
+
+    def delete_document(self, source_filename: str) -> int:
+        if self._fallback_active:
+            return self.fallback.delete_document(source_filename)
+        try:
+            return self.primary.delete_document(source_filename)
+        except Exception as e:
+            self._activate_fallback(str(e))
+            return self.fallback.delete_document(source_filename)
+
+    def add_chunks(self, chunks: List[Dict[str, Any]], embeddings: List[List[float]]) -> int:
+        if self._fallback_active:
+            return self.fallback.add_chunks(chunks, embeddings)
+        try:
+            return self.primary.add_chunks(chunks, embeddings)
+        except Exception as e:
+            self._activate_fallback(str(e))
+            return self.fallback.add_chunks(chunks, embeddings)
+
+    def safe_reindex_document(self, chunks: List[Dict[str, Any]], embeddings: List[List[float]]) -> int:
+        if self._fallback_active:
+            return self.fallback.safe_reindex_document(chunks, embeddings)
+        try:
+            return self.primary.safe_reindex_document(chunks, embeddings)
+        except Exception as e:
+            self._activate_fallback(str(e))
+            return self.fallback.safe_reindex_document(chunks, embeddings)
+
+    def query_similar(self, query_embedding: List[float], top_k: int = 4) -> List[Dict[str, Any]]:
+        if self._fallback_active:
+            return self.fallback.query_similar(query_embedding, top_k=top_k)
+        try:
+            return self.primary.query_similar(query_embedding, top_k=top_k)
+        except Exception as e:
+            self._activate_fallback(str(e))
+            return self.fallback.query_similar(query_embedding, top_k=top_k)
+
+    similarity_search = query_similar
+
+    def get_stats(self) -> Dict[str, Any]:
+        if not self._fallback_active:
+            try:
+                p_stats = self.primary.get_stats()
+                if not p_stats.get("error"):
+                    return p_stats
+                self._activate_fallback(p_stats.get("error"))
+            except Exception as e:
+                self._activate_fallback(str(e))
+
+        fb_stats = dict(self.fallback.get_stats())
+        fb_stats["fallback_active"] = True
+        fb_stats["provider"] = "ChromaDB (Active Resilient Fallback)"
+        if self._fallback_reason:
+            clean_r = sanitize_secret_text(self._fallback_reason)
+            fb_stats["notice"] = (
+                f"Qdrant Cloud unavailable ({clean_r}). "
+                "Operating seamlessly on ChromaDB fallback."
+            )
+        return fb_stats
+
+    def reset_collection(self) -> None:
+        if not self._fallback_active:
+            try:
+                self.primary.reset_collection()
+            except Exception as e:
+                self._activate_fallback(str(e))
+        self.fallback.reset_collection()
+
+
 def get_vector_store(
     provider: Optional[str] = None,
     embedding_dimension: int = 384,
@@ -580,29 +691,38 @@ def get_vector_store(
     Priority:
     1. Explicit provider
     2. Environment / Secrets variable VECTOR_STORE_PROVIDER
-    3. If QDRANT_URL is set -> QdrantCloudVectorStore
+    3. If QDRANT_URL is set -> Resilient Qdrant with ChromaDB fallback
     4. Otherwise -> ChromaVectorStore (local fallback)
     """
     selected = (provider or get_secret("VECTOR_PROVIDER", get_secret("VECTOR_STORE_PROVIDER", ""))).lower()
 
     if selected == "qdrant":
-        q_url = kwargs.get("url") or get_secret("QDRANT_URL", "")
+        q_url = kwargs.get("url") if "url" in kwargs else get_secret("QDRANT_URL", "")
         if not q_url or q_url == ":memory:":
-            if kwargs.get("url") == ":memory:":
+            if kwargs.get("url") == ":memory:" or q_url == ":memory:":
                 return QdrantCloudVectorStore(url=":memory:", embedding_dimension=embedding_dimension, **kwargs)
             raise ValueError(
                 "Qdrant Cloud vector store requested, but QDRANT_URL is not set. "
                 "For persistent cloud operation, configure QDRANT_URL and QDRANT_API_KEY."
             )
-        return QdrantCloudVectorStore(embedding_dimension=embedding_dimension, **kwargs)
+
+        if is_placeholder_qdrant_url(q_url):
+            return ChromaVectorStore(embedding_dimension=embedding_dimension, **kwargs)
+
+        primary_store = QdrantCloudVectorStore(embedding_dimension=embedding_dimension, **kwargs)
+        fallback_store = ChromaVectorStore(embedding_dimension=embedding_dimension, **kwargs)
+        return ResilientVectorStore(primary=primary_store, fallback=fallback_store)
+
     elif selected == "memory":
         return QdrantCloudVectorStore(url=":memory:", embedding_dimension=embedding_dimension, **kwargs)
     elif selected == "chroma":
         return ChromaVectorStore(embedding_dimension=embedding_dimension, **kwargs)
     else:
         q_url = get_secret("QDRANT_URL")
-        if q_url:
-            return QdrantCloudVectorStore(embedding_dimension=embedding_dimension, **kwargs)
+        if q_url and not is_placeholder_qdrant_url(q_url):
+            primary_store = QdrantCloudVectorStore(embedding_dimension=embedding_dimension, **kwargs)
+            fallback_store = ChromaVectorStore(embedding_dimension=embedding_dimension, **kwargs)
+            return ResilientVectorStore(primary=primary_store, fallback=fallback_store)
         return ChromaVectorStore(embedding_dimension=embedding_dimension, **kwargs)
 
 

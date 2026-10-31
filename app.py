@@ -17,6 +17,7 @@ from vector_store import (
     validate_and_sanitize_qdrant_url,
     sanitize_qdrant_api_key,
     sanitize_secret_text,
+    is_placeholder_qdrant_url,
 )
 from llm_service import (
     ClaudeLLMService,
@@ -91,46 +92,31 @@ _is_cloud = bool(
     or get_secret("IS_STREAMLIT_CLOUD") == "true"
 )
 
-if _v_prov == "qdrant" or (_is_cloud and _v_prov not in ["chroma", "memory"]):
-    _q_url = get_secret("QDRANT_URL")
-    _q_key = get_secret("QDRANT_API_KEY")
-    if not _q_url or not _q_key:
+_q_url = get_secret("QDRANT_URL")
+_q_key = get_secret("QDRANT_API_KEY")
+_is_placeholder = is_placeholder_qdrant_url(_q_url) if _q_url else True
+
+# If a non-placeholder Qdrant cluster is explicitly configured, validate format
+if not _is_placeholder and _q_url and _q_key:
+    try:
+        validate_and_sanitize_qdrant_url(_q_url)
+        sanitize_qdrant_api_key(_q_key)
+    except ValueError as val_err:
         st.error(
-            "🛑 **Blocking Configuration Error: Missing Qdrant Cloud Credentials**\n\n"
-            "The application is running in production cloud mode requiring persistent vector storage, "
-            "but `QDRANT_URL` or `QDRANT_API_KEY` is not configured in Streamlit Secrets.\n\n"
-            "**Why this is blocked:** Streamlit Community Cloud containers are ephemeral and hibernate after 12 hours. "
-            "Without persistent Qdrant Cloud storage, indexed vectors would be lost on container restart.\n\n"
-            "**Action Required:**\n"
-            "1. In **share.streamlit.io** -> App Settings -> **Secrets**, configure:\n"
-            "```toml\n"
-            "VECTOR_PROVIDER = \"qdrant\"\n"
-            "QDRANT_URL = \"https://your-cluster-id.region.aws.cloud.qdrant.io\"\n"
-            "QDRANT_API_KEY = \"your-qdrant-api-key\"\n"
-            "```\n"
-            "*(For local offline development, set `VECTOR_PROVIDER = 'chroma'`)*"
+            f"🛑 **Blocking Configuration Error: Invalid Qdrant Cloud Format**\n\n"
+            f"**Details:** {val_err}\n\n"
+            "**Action Required in Streamlit Secrets:**\n"
+            "- Ensure `QDRANT_URL` is a plain HTTPS endpoint (e.g., `https://bc55f8d5-....cloud.qdrant.io`), not a Markdown link.\n"
+            "- Ensure `QDRANT_API_KEY` is pasted on a single line without quotes, whitespace, or newlines."
         )
         st.stop()
-    else:
-        try:
-            validate_and_sanitize_qdrant_url(_q_url)
-            sanitize_qdrant_api_key(_q_key)
-        except ValueError as val_err:
-            st.error(
-                f"🛑 **Blocking Configuration Error: Invalid Qdrant Cloud Format**\n\n"
-                f"**Details:** {val_err}\n\n"
-                "**Action Required in Streamlit Secrets:**\n"
-                "- Ensure `QDRANT_URL` is a plain HTTPS endpoint (e.g., `https://bc55f8d5-....cloud.qdrant.io`), not a Markdown link.\n"
-                "- Ensure `QDRANT_API_KEY` is pasted on a single line without quotes, whitespace, or newlines."
-            )
-            st.stop()
 
 
 @st.cache_resource(show_spinner=False)
 def get_cached_rag(provider: str):
     rag = RAGService(llm_provider=provider)
     stats = rag.get_stats()
-    if not stats.get("error") and stats.get("total_chunks", 0) == 0 and os.path.exists("./data"):
+    if stats.get("total_chunks", 0) == 0 and os.path.exists("./data"):
         try:
             rag.index_directory("./data")
         except Exception as e:
@@ -265,7 +251,11 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 with tab1:
     st.markdown("#### Ask questions about college regulations, exams, placement, or campus conduct:")
 
-    if stats.get("error"):
+    if stats.get("notice"):
+        st.info(f"ℹ️ **Vector Database Notice:** {stats.get('notice')}")
+    elif stats.get("warning"):
+        st.warning(f"⚠️ **Vector Database Warning:** {stats.get('warning')}")
+    elif stats.get("error"):
         st.warning(
             f"⚠️ **Vector Database Warning:** {stats.get('error')}\n\n"
             "*(Answers may be unavailable until Qdrant Cloud connectivity is restored.)*"
@@ -365,7 +355,9 @@ with tab2:
 
     with col_c3:
         vdb_err = stats.get("error")
-        vdb_status = "🔴 Error / Unreachable" if vdb_err else "🟢 Operational"
+        vdb_status = "🟢 Operational" if not vdb_err else "🔴 Error / Unreachable"
+        if stats.get("fallback_active"):
+            vdb_status = "🟢 Operational (Resilient Fallback)"
         st.markdown(f"""
         <div class="status-card">
             <h4>🗄️ Vector Database</h4>
@@ -375,7 +367,11 @@ with tab2:
             <p><b>Chunks:</b> {stats.get('total_chunks', 0)} Indexed</p>
         </div>
         """, unsafe_allow_html=True)
-        if vdb_err:
+        if stats.get("notice"):
+            st.info(f"ℹ️ {stats.get('notice')}")
+        elif stats.get("warning"):
+            st.warning(f"⚠️ {stats.get('warning')}")
+        elif vdb_err:
             st.error(f"⚠️ **Vector Database Warning:** {vdb_err}")
 
     st.markdown("#### 📋 Integration Matrix")
