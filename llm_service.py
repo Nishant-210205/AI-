@@ -15,6 +15,18 @@ from abc import ABC, abstractmethod
 
 
 def get_secret(key: str, default: Optional[str] = None) -> Optional[str]:
+    # 0. Check Streamlit session_state if running inside Streamlit (runtime user input)
+    try:
+        import streamlit as st
+        if hasattr(st, "session_state") and st.session_state is not None:
+            for k in (key, key.upper(), key.lower()):
+                if k in st.session_state and st.session_state[k]:
+                    cleaned = str(st.session_state[k]).strip().strip("\"'`").strip()
+                    if cleaned:
+                        return cleaned
+    except Exception:
+        pass
+
     # 1. Check environment variables (exact match, uppercase, lowercase)
     for k in (key, key.upper(), key.lower()):
         val = os.environ.get(k)
@@ -102,13 +114,17 @@ class GeminiLLMService(BaseLLMService):
         self._client = None
 
     def _get_client(self):
-        if self._client is None and self.api_key:
-            from google import genai
-            self._client = genai.Client(api_key=self.api_key)
+        latest_key = get_secret("GEMINI_API_KEY") or self.api_key
+        if self._client is None or (latest_key and latest_key != self.api_key):
+            self.api_key = latest_key
+            if self.api_key:
+                from google import genai
+                self._client = genai.Client(api_key=self.api_key)
         return self._client
 
     def is_available(self) -> bool:
-        return bool(self.api_key and len(self.api_key.strip()) > 10)
+        current_k = get_secret("GEMINI_API_KEY") or self.api_key
+        return bool(current_k and len(current_k.strip()) > 10 and not current_k.startswith("your_") and not current_k.startswith("AIzaSyYour"))
 
     def generate_response(self, prompt: str, system_prompt: Optional[str] = None) -> str:
         if not self.is_available():

@@ -147,8 +147,20 @@ with st.sidebar:
     if new_provider == "gemini":
         gemini_model = get_secret("GEMINI_MODEL", "gemini-2.0-flash")
         st.caption(f"**Model:** `{gemini_model}` (Google AI Studio Free Tier)")
-        if not get_secret("GEMINI_API_KEY"):
-            st.warning("⚠️ `GEMINI_API_KEY` not detected in Secrets/Env. Free key at [Google AI Studio](https://aistudio.google.com/)")
+        current_g_key = get_secret("GEMINI_API_KEY", "")
+        is_invalid = not current_g_key or current_g_key.startswith("your_") or current_g_key.startswith("AIzaSyYour")
+        key_input = st.text_input(
+            "🔑 Gemini API Key:",
+            value="" if is_invalid else current_g_key,
+            type="password",
+            placeholder="AIzaSy...",
+            help="Get a free key (no credit card required) at https://aistudio.google.com/apikey"
+        )
+        if key_input and key_input != current_g_key:
+            st.session_state["GEMINI_API_KEY"] = key_input
+            st.rerun()
+        if is_invalid:
+            st.info("💡 Enter your key above or in Secrets. Free at [Google AI Studio](https://aistudio.google.com/apikey)")
     elif new_provider == "groq":
         groq_model = get_secret("GROQ_MODEL", "llama-3.3-70b-versatile")
         st.caption(f"**Model:** `{groq_model}` (Groq Cloud Free Tier)")
@@ -282,8 +294,14 @@ with tab1:
         st.markdown("### 📝 Answer")
         if result.get("is_error"):
             st.error(f"❌ {result['answer']}")
-            if "Google Gemini API key not configured" in result["answer"]:
-                st.info("💡 **Setup Instructions:** Configure `GEMINI_API_KEY` in Streamlit Cloud Secrets (share.streamlit.io). Obtain a free tier key at [Google AI Studio](https://aistudio.google.com/).")
+            if any(term in result["answer"] for term in ("API key not valid", "INVALID_ARGUMENT", "Google Gemini API key not configured")):
+                st.info(
+                    "💡 **Action Required: Invalid or Placeholder Gemini Key**\n\n"
+                    "Google rejected the provided key. You can fix this in seconds:\n\n"
+                    "1. Get a 100% free key at [Google AI Studio](https://aistudio.google.com/apikey) (no credit card required).\n"
+                    "2. Paste it directly in the left sidebar under **🔑 Gemini API Key** (or in Streamlit Cloud Secrets).\n"
+                    "3. *(Alternatively, switch **Active Provider** in the left sidebar to **Mock (Testing / Offline)** to test the full RAG pipeline immediately without any API key).* "
+                )
             elif "Anthropic API key is not configured" in result["answer"]:
                 st.info("💡 **Setup Instructions:** Configure `ANTHROPIC_API_KEY` and set `ENABLE_CLAUDE=true` in Streamlit Cloud Secrets.")
             elif "Groq API key not configured" in result["answer"]:
