@@ -169,21 +169,6 @@ def get_secret(key: str, default: Optional[str] = None) -> Optional[str]:
     return default
 
 
-__all__ = [
-    "BaseVectorStore",
-    "QdrantCloudVectorStore",
-    "ChromaVectorStore",
-    "ResilientVectorStore",
-    "VectorStore",
-    "get_vector_store",
-    "is_placeholder_qdrant_url",
-    "validate_and_sanitize_qdrant_url",
-    "sanitize_qdrant_api_key",
-    "sanitize_secret_text",
-    "get_secret",
-]
-
-
 class BaseVectorStore(ABC):
     """Abstract interface for vector database storage."""
 
@@ -728,4 +713,18 @@ def get_vector_store(
 
 # Backwards compatibility alias
 VectorStore = ChromaVectorStore
+
+__all__ = [
+    "BaseVectorStore",
+    "QdrantCloudVectorStore",
+    "ChromaVectorStore",
+    "ResilientVectorStore",
+    "VectorStore",
+    "get_vector_store",
+    "is_placeholder_qdrant_url",
+    "validate_and_sanitize_qdrant_url",
+    "sanitize_qdrant_api_key",
+    "sanitize_secret_text",
+    "get_secret",
+]
 

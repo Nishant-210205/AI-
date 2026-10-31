@@ -18,12 +18,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from document_loader import load_documents_from_directory, load_pdf_with_metadata, load_pdf_from_bytes
 from chunker import chunk_document_pages
 from embeddings import BaseEmbedder, get_embedder
-from vector_store import (
-    BaseVectorStore,
-    get_vector_store,
-    validate_and_sanitize_qdrant_url,
-    sanitize_qdrant_api_key,
-)
+from vector_store import BaseVectorStore, get_vector_store
 from retriever import SemanticRetriever
 from llm_service import BaseLLMService, get_llm_service, UNKNOWN_ANSWER_PHRASE
 
