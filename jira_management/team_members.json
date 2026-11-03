@@ -1,0 +1,52 @@
+{
+  "Student 1": {
+    "name": "Nishant",
+    "email": "nishant@example.com",
+    "role": "Project Lead",
+    "assigned_tasks": [
+      "RAG-1",
+      "RAG-2",
+      "RAG-3",
+      "RAG-6",
+      "RAG-20"
+    ]
+  },
+  "Student 2": {
+    "name": "Student 2",
+    "email": "",
+    "role": "Embeddings & Vector Storage Lead",
+    "assigned_tasks": [
+      "RAG-7",
+      "RAG-8",
+      "RAG-9",
+      "RAG-10",
+      "RAG-19"
+    ]
+  },
+  "Student 3": {
+    "name": "Student 3",
+    "email": "",
+    "role": "LLM Integration & Prompt Engineer",
+    "assigned_tasks": [
+      "RAG-4",
+      "RAG-5",
+      "RAG-11",
+      "RAG-12",
+      "RAG-13",
+      "RAG-14",
+      "RAG-22"
+    ]
+  },
+  "Student 4": {
+    "name": "Student 4",
+    "email": "",
+    "role": "UI, Benchmarking & Deployment Lead",
+    "assigned_tasks": [
+      "RAG-15",
+      "RAG-16",
+      "RAG-17",
+      "RAG-18",
+      "RAG-21"
+    ]
+  }
+}
